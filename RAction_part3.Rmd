@@ -1,0 +1,263 @@
+---
+title: "R in Action Part III : Intermediate methods"
+author: "Chins"
+date: "2019年9月23日"
+output: 
+  html_document: 
+    theme: readable
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+
+# 3.1 regression----
+
+## OLS 
+```{r eval=FALSE, include=FALSE}
+?lm()  #linear model
+?abline
+?lines
+?nls() #nonlinear (weighted) least-squares
+```
+
+ #car::scatterplot()
+```{r}
+library(car)
+fit3 <- lm(weight ~ height + I(height^2) +I(height^3), data=women)
+scatterplot(weight ~ height, data=women,
+ smooth=list(spread=FALSE, lty=2, lwd.smooth=1, col.smooth=1),  #smooth是散点图之间的连线。col of mean smooth 
+ regLine=list(method=lm, lty=1, lwd=1, col=1),  #拟合线. lty是linestyle=1是实线
+ pch=19,   #点的形状，实心圆形
+ col=2,   #点的颜色
+main="Women Age 30-39",
+xlab="Height (inches)",
+ylab="Weight (lbs.)")
+```
+
+### 画交乘项的图
+```{r}
+library(effects)
+fit <- lm(mpg ~ hp + wt + hp:wt, data=mtcars)
+#plot(effect("hp:wt", fit, list(wt=c(2.2,3.2,4.2))), multiline=TRUE),
+
+plot(predictorEffects(fit, ~ hp:wt, 
+                      xlevels=list(wt=c(2.2,3.2,4.2))), #不控制hp的话会自动给出hp的值并计算。
+     axes=list(grid=FALSE,
+               x=list(rug=TRUE),
+               y=list(type="response", lab="mpg(miles per gallon)")),
+     lines=list(multiline=TRUE))
+```
+
+### ols 回归结果是否符合基本假设
+```{r}
+states <- as.data.frame(state.x77[,c("Murder", "Population",
+"Illiteracy", "Income", "Frost")])
+fit <- lm(Murder ~ Population + Illiteracy + Income + Frost, data=states)
+par(mfrow=c(2,2))
+plot(fit)
+```
+
+### gvlma :Global validation of linear model assumption
+```{r}
+library(gvlma)
+gvmodel <- gvlma(fit)
+summary(gvmodel)
+```
+### Multicollinearity: sqrt(vif)>2
+```{r}
+library(car)
+sqrt(vif(fit)) > 2 # problem?
+```
+
+### Unusual observations
+### Outliers
+```{r}
+library(car)
+hat.plot <- function(fit) {
+  p <- length(coefficients(fit))
+  n <- length(fitted(fit))
+  pointlabel<-which(hatvalues(fit)>2*p/n)
+  plot(hatvalues(fit),main="Index Plot of Hat Values",
+       ylim=c(0,0.5))  #设定y轴的刻度范围
+  text(pointlabel,hatvalues(fit)[pointlabel],labels=names(pointlabel),pos=3) #给特定的点加标签
+  abline(h=c(2,3)*p/n, col="red", lty=2)}
+hat.plot(fit)
+```
+
+## Corrective measures
+
+ #car::powerTransform()  generate a maximum-likelihood estimation of the power λ most likely to normalize the variable X^λ.
+ #car::boxTidwell()  generate maximum-likelihood estimates of predictor powers that can improve linearity
+
+
+## Selecting the “best” regression model
+
+ #anova() 比较两个不同control组的模型，有无差别。
+ #AIC() aic小的好
+### stepwise
+
+ #MASS::stepAIC()
+```{r eval=FALSE, include=FALSE}
+library(MASS)
+states <- as.data.frame(state.x77[,c("Murder", "Population",
+"Illiteracy", "Income", "Frost")])
+fit <- lm(Murder ~ Population + Illiteracy + Income + Frost,
+data=states)
+stepAIC(fit, direction="backward")
+```
+
+### all subsets regression
+ #leaps::regsubsets()
+
+
+## Taking the analysis further， generalization
+### Cross-validation.       bootstrap:::crossval()
+```{r}
+#install.packages("bootstrap")
+shrinkage <- function(fit, k=10){
+require(bootstrap)
+theta.fit <- function(x,y){lsfit(x,y)}
+theta.predict <- function(fit,x){cbind(1,x)%*%fit$coef}
+x <- fit$model[,2:ncol(fit$model)]
+y <- fit$model[,1]
+results <- crossval(x, y, theta.fit, theta.predict, ngroup=k)
+r2 <- cor(y, fit$fitted.values)^2
+r2cv <- cor(y, results$cv.fit)^2
+cat("Original R-square =", r2, "\n")
+cat(k, "Fold Cross-Validated R-square =", r2cv, "\n")
+cat("Change =", r2-r2cv, "\n")
+}
+states <- as.data.frame(state.x77[,c("Murder", "Population",
+"Illiteracy", "Income", "Frost")])
+fit <- lm(Murder ~ Population + Income + Illiteracy + Frost, data=states)
+shrinkage(fit)
+```
+
+### Relative importance
+
+###scale() :将sample标准化为mean=0，delta=1，看每个自变量变动一个标准误的系数。
+
+###relative weights :find contribution each predictor makes to R-square
+```{r}
+relweights <- function(fit,...){
+  R <- cor(fit$model) #相关系数矩阵Rxx
+  nvar <- ncol(R)
+  rxx <- R[2:nvar, 2:nvar] #自变量的相关系数矩阵
+  rxy <- R[2:nvar, 1] 
+  svd <- eigen(rxx) #计算矩阵特征值、特征向量
+  evec <- svd$vectors  #特征向量
+  ev <- svd$values #特征值
+  delta <- diag(sqrt(ev))  #以特征值的平方根为对角线创建矩阵delta
+  lambda <- evec %*% delta %*% t(evec)    # correlations between original predictors and new orthogonal variables。转化为对角化矩阵
+  lambdasq <- lambda ^ 2  
+  beta <- solve(lambda) %*% rxy   # regression coefficients of Y on orthogonal variables正交矩阵.$AA=I$则A是正交矩阵。求lambda的逆矩阵，再乘rxy
+  rsquare <- colSums(beta ^ 2) #R^2是模型对总体的解释力度
+  rawwgt <- lambdasq %*% beta ^ 2  #自变量对总体的解释力度
+  import <- (rawwgt / rsquare) * 100
+  import <- as.data.frame(import)
+  row.names(import) <- names(fit$model[2:nvar])
+  names(import) <- "Weights" #设定列名
+  import <- import[order(import),1, drop=FALSE]
+  dotchart(import$Weights, labels=row.names(import),
+    xlab="% of R-Square", pch=19,
+    main="Relative Importance of Predictor Variables",
+    sub=paste("Total R-Square=", round(rsquare, digits=3)),  #点线
+    ...)
+return(import)
+}
+
+states <- as.data.frame(state.x77[,c("Murder", "Population",
+"Illiteracy", "Income", "Frost")])
+fit <- lm(Murder ~ Population + Illiteracy + Income + Frost, data=states)
+relweights(fit, col="blue")
+```
+
+### 矩阵形式ols的求解
+
+已知$X\beta=Y$，求$\beta$ :
+
+$\because X^TX\beta=X^TY$
+
+$\therefore \beta=(X^TX)^{-1}X^TY$
+
+### calculation of relative weight 
+*ref:Jeff Johnson,2000. A Heuristic Method for Estimating the Relative Weight of Predictor Variables in Multiple Regression. Multivariate Behavioral Research, 35:1-19*
+
+每个变量的贡献包括单独贡献以及包含与其他变量的correlation的贡献。
+
+将原自变量矩阵转化为不互相关的正交矩阵，obtaining the bestfitting (in the least squares sense) set of orthogonal variables（正交矩阵）
+1. 先求矩阵$X{'}X$的eigenvectors和eigenvalues
+2. 再求$X$的singular value decomposition （奇异值分解），求类似主成分分析（PCA）那样的退化矩阵
+$$
+X=P\Delta Q'
+$$
+
+$$
+\Delta=\sqrt{eigenvalues} 
+$$
+这里P和Q都是eigenvectors
+
+ps：If no two predictor variables in X are perfectly correlated with each other, X is of full rank and no diagonal elements of $\Delta$ will be equal to zero.
+
+3. 找到与$X$最接近的正交矩阵$Z$，因为The columns of Z are the best-fitting approximations to the columns of X in that they minimize the residual sum of squares between the original variables and the orthogonal variables (Johnson, 1966)
+$$
+Z=PQ{'}
+$$
+4. 让X在Z上回归，$X=\Lambda Z$，因此
+
+$$
+\Lambda=(Z'Z)^{-1}Z'X=Q\Delta Q' \tag{1}
+$$
+
+X is a linear transformation of Z
+Because the Z variables are uncorrelated, the relative contribution of each z to each x is represented by the squared standardized regression coefficient (which is the same as the squared zero-order correlation) of each z for each x, represented by the squared column elements of $\Lambda (\lambda_{jk^2})$
+
+由于$Z'X=X'Z$，因此any particular $\lambda_{jk^2}$ represents the proportion of variance in $z_k$ accounted for by $x_j$, just as it represents the proportion of variance in $x_j$ accounted for by $z_k$.
+
+5. 找到Y被Z解释的部分$\beta$。The vector of beta weights when regressing y on Z is obtained by
+
+$$
+\beta=(Z'Z)^{-1}Z'y=QP'y
+$$
+
+6. 求relative weights
+转化为方差的平方单位，再将其scaled by $R^2$
+$$
+\varepsilon=\frac{\Lambda^2*\beta^2}{\sum{\beta^2_i}} \tag{2}
+$$
+其中，由于Z是X的近似替代，所以$R^2=\sum{\beta^2_i}$
+
+7. 因此在计算relative weights的时候我们有X的correlation matrix等于
+$$
+X=P\Delta Q' \\
+R_{XX}=X'X=Q\Delta P'P\Delta Q'=Q\Delta^2Q' 
+$$
+Q正好是$R_{XX}$的eigenvalues
+由（1）知
+$$
+R^{1/2}_{XX}=Q\Delta Q'=\Lambda  \tag{3}
+$$
+$$
+\therefore R_{XZ}=X'Z=Q\Delta P'P\Delta Q'=Q\Delta Q'=R^{1/2}_{XX}
+$$
+由于$R_{XZ}R_{YZ}=R_{XY}$，即$R_{XZ}\beta=R_{XY}$，因此
+$$
+\beta=R^{-1}_{XZ}R_{XY}=\Lambda^{-1}R_{XY} \tag{4}
+$$
+
+按照(3)(4)算出$\Lambda$ 和 $\beta$代入(2)即可.
+
+
+# 3.2 Analysis of variance （ANOVA）
+
+```{r}
+x<-c(1,2,3,4,5)
+plot(x,x)
+```
+
+
